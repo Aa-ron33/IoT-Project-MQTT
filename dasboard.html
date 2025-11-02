@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Smart Scheduler - Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- ✅ FIXED: Gunakan versi Paho yang benar untuk WebSocket -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+</head>
+<body class="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 min-h-screen">
+  <div class="max-w-6xl mx-auto p-6">
+    <header class="bg-white rounded-xl shadow p-6 flex items-center justify-between mb-6 border-l-4 border-indigo-500">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-800">💡 Smart Scheduler Dashboard</h1>
+        <p class="text-sm text-gray-500">MQTT Scheduler (HiveMQ Cloud) — Add / Delete / Execute tasks</p>
+      </div>
+      <div class="flex items-center gap-4">
+        <div id="connectionBadge" class="px-4 py-2 rounded-lg bg-red-100 text-red-700 font-medium">Disconnected</div>
+        <button id="connectBtn" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600">Connect MQTT</button>
+      </div>
+    </header>
+
+    <!-- ✅ ADDED: Error Display -->
+    <div id="errorAlert" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+      <strong>Error:</strong> <span id="errorMessage"></span>
+    </div>
+
+    <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <!-- Left: Add Task + Device Controls -->
+      <section class="col-span-1 bg-white rounded-xl shadow p-6">
+        <h2 class="font-semibold text-lg mb-3">Create New Task</h2>
+
+        <div class="space-y-2">
+          <label class="text-sm text-gray-600">Task Name</label>
+          <input id="taskName" class="w-full px-3 py-2 border rounded-lg" placeholder="e.g., Morning Blink" />
+
+          <label class="text-sm text-gray-600">Action</label>
+          <select id="taskAction" class="w-full px-3 py-2 border rounded-lg">
+            <option value="led_blink">💡 LED Blink Pattern</option>
+            <option value="serial_message">📢 Serial Message</option>
+            <option value="mqtt_broadcast">📡 MQTT Broadcast</option>
+            <option value="status_report">📊 Status Report</option>
+          </select>
+
+          <div class="flex gap-2">
+            <div class="w-1/2">
+              <label class="text-sm text-gray-600">Hour (0-23)</label>
+              <input id="taskHour" type="number" min="0" max="23" value="12" class="w-full px-3 py-2 border rounded-lg" />
+            </div>
+            <div class="w-1/2">
+              <label class="text-sm text-gray-600">Minute (0-59)</label>
+              <input id="taskMinute" type="number" min="0" max="59" value="0" class="w-full px-3 py-2 border rounded-lg" />
+            </div>
+          </div>
+
+          <label class="text-sm text-gray-600">Days</label>
+          <select id="taskDays" class="w-full px-3 py-2 border rounded-lg">
+            <option value="daily">Daily</option>
+            <option value="weekday">Weekdays (Mon-Fri)</option>
+            <option value="weekend">Weekends</option>
+            <option value="1">Monday</option>
+            <option value="2">Tuesday</option>
+            <option value="3">Wednesday</option>
+            <option value="4">Thursday</option>
+            <option value="5">Friday</option>
+            <option value="6">Saturday</option>
+            <option value="7">Sunday</option>
+          </select>
+
+          <label class="text-sm text-gray-600">Priority</label>
+          <select id="taskPriority" class="w-full px-3 py-2 border rounded-lg">
+            <option value="1">🔴 High</option>
+            <option value="2" selected>🟡 Medium</option>
+            <option value="3">🟢 Low</option>
+          </select>
+
+          <div class="flex gap-2 mt-3">
+            <button id="addTaskBtn" class="flex-1 bg-indigo-500 text-white py-2 rounded-lg hover:bg-indigo-600 disabled:opacity-50">Add Task</button>
+            <button id="syncTimeBtn" class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">Sync Time</button>
+          </div>
+        </div>
+
+        <!-- ✅ ADDED: Quick Actions -->
+        <div class="mt-6 pt-6 border-t">
+          <h3 class="font-semibold text-sm mb-2">Quick Actions</h3>
+          <div class="space-y-2">
+            <button id="listTasksBtn" class="w-full px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded text-sm">📋 List All Tasks</button>
+            <button id="clearAllBtn" class="w-full px-3 py-2 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm">🗑️ Clear All (UI)</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Middle: Tasks List -->
+      <section class="col-span-1 lg:col-span-2 bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-semibold text-lg">Scheduled Tasks <span id="tasksCount" class="text-sm text-gray-500 ml-2"></span></h2>
+          <div class="flex items-center gap-2">
+            <div id="deviceInfo" class="text-sm text-gray-600">Device: -</div>
+            <div id="lastSeen" class="text-sm text-gray-500">Last seen: -</div>
+          </div>
+        </div>
+
+        <div id="tasksContainer" class="space-y-3">
+          <div class="text-gray-500 p-12 text-center rounded-lg border-dashed border-2 border-gray-200">No tasks yet. Add one on the left.</div>
+        </div>
+
+        <hr class="my-4" />
+
+        <h3 class="font-semibold mb-2">Executions (recent)</h3>
+        <div id="executionsContainer" class="space-y-2 max-h-48 overflow-auto">
+          <div class="text-sm text-gray-500">No executions yet.</div>
+        </div>
+      </section>
+    </main>
+
+    <!-- ✅ ADDED: Debug Console -->
+    <section class="mt-6 bg-gray-900 text-gray-100 rounded-xl shadow p-4">
+      <div class="flex justify-between items-center mb-2">
+        <h3 class="font-semibold">📡 MQTT Debug Console</h3>
+        <button id="clearConsoleBtn" class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded">Clear</button>
+      </div>
+      <div id="debugConsole" class="font-mono text-xs space-y-1 max-h-48 overflow-auto">
+        <div class="text-gray-500">Waiting for MQTT connection...</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // === CONFIG ===
+    const BROKER = "0d85364bea6c4d089979b536d2013b26.s1.eu.hivemq.cloud";
+    const PORT = 8884; // ✅ FIXED: HiveMQ WebSocket Secure port adalah 8884 (bukan 8883)
+    const PATH = "/mqtt"; // ✅ ADDED: WebSocket path
+    const USERNAME = "hivemq.webclient.1761715579377";
+    const PASSWORD = "X8ex*bB3%Z6?YWuaA5n.";
+
+    const TOPIC_COMMAND = "scheduler/command";
+    const TOPIC_STATUS = "scheduler/status";
+    const TOPIC_EXECUTE = "scheduler/execute";
+    const TOPIC_HEARTBEAT = "scheduler/heartbeat";
+
+    // === STATE ===
+    let client = null;
+    let isConnected = false;
+    let tasks = [];
+    let executions = [];
+
+    // UI elements
+    const connectionBadge = document.getElementById("connectionBadge");
+    const connectBtn = document.getElementById("connectBtn");
+    const addTaskBtn = document.getElementById("addTaskBtn");
+    const tasksContainer = document.getElementById("tasksContainer");
+    const tasksCount = document.getElementById("tasksCount");
+    const executionsContainer = document.getElementById("executionsContainer");
+    const deviceInfo = document.getElementById("deviceInfo");
+    const lastSeen = document.getElementById("lastSeen");
+    const syncTimeBtn = document.getElementById("syncTimeBtn");
+    const listTasksBtn = document.getElementById("listTasksBtn");
+    const clearAllBtn = document.getElementById("clearAllBtn");
+    const debugConsole = document.getElementById("debugConsole");
+    const clearConsoleBtn = document.getElementById("clearConsoleBtn");
+    const errorAlert = document.getElementById("errorAlert");
+    const errorMessage = document.getElementById("errorMessage");
+
+    // ✅ Debug logging
+    function log(message, type = "info") {
+      const timestamp = new Date().toLocaleTimeString();
+      const div = document.createElement("div");
+      const colors = {
+        info: "text-blue-400",
+        success: "text-green-400",
+        error: "text-red-400",
+        warning: "text-yellow-400"
+      };
+      div.className = colors[type] || "text-gray-400";
+      div.textContent = `[${timestamp}] ${message}`;
+      debugConsole.appendChild(div);
+      debugConsole.scrollTop = debugConsole.scrollHeight;
+      
+      // Keep only last 50 messages
+      while (debugConsole.children.length > 50) {
+        debugConsole.removeChild(debugConsole.firstChild);
+      }
+    }
+
+    function showError(msg) {
+      errorMessage.textContent = msg;
+      errorAlert.classList.remove("hidden");
+      setTimeout(() => errorAlert.classList.add("hidden"), 5000);
+    }
+
+    function setConnection(connected) {
+      isConnected = connected;
+      if (connected) {
+        connectionBadge.innerText = "Connected ✅";
+        connectionBadge.classList.remove("bg-red-100","text-red-700");
+        connectionBadge.classList.add("bg-green-100","text-green-700");
+        connectBtn.disabled = true;
+        connectBtn.textContent = "Connected";
+        log("MQTT connection established", "success");
+      } else {
+        connectionBadge.innerText = "Disconnected";
+        connectionBadge.classList.remove("bg-green-100","text-green-700");
+        connectionBadge.classList.add("bg-red-100","text-red-700");
+        connectBtn.disabled = false;
+        connectBtn.textContent = "Connect MQTT";
+        log("MQTT disconnected", "warning");
+      }
+    }
+
+    function renderTasks() {
+      tasksCount.innerText = `(${tasks.length})`;
+      if (tasks.length === 0) {
+        tasksContainer.innerHTML = '<div class="text-gray-500 p-12 text-center rounded-lg border-dashed border-2 border-gray-200">No tasks yet. Add one on the left.</div>';
+        return;
+      }
+      tasksContainer.innerHTML = "";
+      tasks.slice().reverse().forEach(task => {
+        const div = document.createElement("div");
+        div.className = "flex items-center justify-between p-4 rounded-lg shadow-sm border-l-4 border-indigo-500 hover:shadow-md transition";
+        div.innerHTML = `
+          <div class="flex-1">
+            <div class="flex items-center gap-3">
+              <h3 class="font-semibold">${escapeHtml(task.name)}</h3>
+              <span class="text-xs px-2 py-1 rounded ${task.priority==1 ? 'bg-red-100 text-red-700' : task.priority==2 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}">Priority ${task.priority}</span>
+            </div>
+            <div class="text-sm text-gray-600 mt-1">
+              ⏰ ${String(task.hour).padStart(2,'0')}:${String(task.minute).padStart(2,'0')} — 📅 ${escapeHtml(task.days)} — ⚡ ${escapeHtml(task.action)}
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <button class="executeBtn px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 text-sm">▶ Execute</button>
+            <button class="deleteBtn px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm">🗑 Delete</button>
+          </div>
+        `;
+        
+        const execBtn = div.querySelector(".executeBtn");
+        const delBtn = div.querySelector(".deleteBtn");
+        execBtn.onclick = () => {
+          sendCommand("execute_now", { task_id: task.id });
+          log(`Executing task: ${task.name}`, "info");
+        };
+        delBtn.onclick = () => {
+          sendCommand("delete_task", { task_id: task.id });
+          tasks = tasks.filter(t => t.id !== task.id);
+          renderTasks();
+          log(`Deleted task: ${task.name}`, "warning");
+        };
+
+        tasksContainer.appendChild(div);
+      });
+    }
+
+    function renderExecutions() {
+      if (executions.length === 0) {
+        executionsContainer.innerHTML = '<div class="text-sm text-gray-500">No executions yet.</div>';
+        return;
+      }
+      executionsContainer.innerHTML = "";
+      executions.slice(0, 20).forEach(exec => {
+        const el = document.createElement("div");
+        el.className = "p-2 rounded shadow-sm bg-gray-50 flex items-center justify-between hover:bg-gray-100 transition";
+        el.innerHTML = `
+          <div>
+            <div class="font-medium text-sm">${escapeHtml(exec.task_name || exec.task)}</div>
+            <div class="text-xs text-gray-500">${escapeHtml(exec.action || "")}</div>
+          </div>
+          <div class="text-right text-xs">
+            <div class="text-gray-600">${escapeHtml(exec.executed_at || exec.time || new Date().toLocaleString())}</div>
+            <div class="${exec.result==='success' ? 'text-green-600' : 'text-red-600'} font-semibold">${escapeHtml(exec.result || '')}</div>
+          </div>
+        `;
+        executionsContainer.appendChild(el);
+      });
+    }
+
+    function escapeHtml(str) {
+      if (!str && str !== 0) return "";
+      return String(str).replace(/[&<>"'`=\/]/g, function(s){ return ({
+        '&': '&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','/':'&#x2F;','`':'&#x60;','=':'&#x3D;'
+      })[s]; });
+    }
+
+    // ✅ FIXED: MQTT Connection dengan proper WebSocket configuration
+    function connectMqtt() {
+      if (client && isConnected) {
+        log("Already connected", "warning");
+        return;
+      }
+      
+      const clientId = "WebDashboard_" + Math.random().toString(16).substr(2,8);
+      log(`Connecting to ${BROKER}:${PORT} as ${clientId}...`, "info");
+      
+      // ✅ FIXED: Proper Paho client initialization untuk WebSocket
+      client = new Paho.Client(BROKER, PORT, PATH, clientId);
+
+      client.onConnectionLost = (response) => {
+        log(`Connection lost: ${response.errorMessage}`, "error");
+        setConnection(false);
+      };
+
+      client.onMessageArrived = (message) => {
+        const topic = message.destinationName;
+        const payload = message.payloadString;
+        log(`📨 ${topic}: ${payload.substring(0, 100)}`, "info");
+
+        try {
+          const data = JSON.parse(payload);
+          
+          if (topic === TOPIC_EXECUTE) {
+            executions.unshift(data);
+            if (executions.length > 100) executions.pop();
+            renderExecutions();
+            log(`Task executed: ${data.task_name} - ${data.result}`, "success");
+          } 
+          else if (topic === TOPIC_STATUS) {
+            deviceInfo.innerText = "Device: " + (data.device || "ESP32_Scheduler");
+            lastSeen.innerText = "Last seen: " + new Date().toLocaleTimeString();
+            log(`Status: ${data.message}`, "info");
+          } 
+          else if (topic === TOPIC_HEARTBEAT) {
+            lastSeen.innerText = "Last seen: " + new Date().toLocaleTimeString();
+            if (data.uptime !== undefined) {
+              const uptimeMin = Math.floor((data.uptime||0)/60);
+              deviceInfo.innerText = `Device: ${data.device || "ESP32"} • Uptime ${uptimeMin}m • Heap ${data.free_heap || 0}`;
+            }
+          }
+        } catch (e) {
+          log(`Parse error: ${e.message}`, "error");
+        }
+      };
+
+      // ✅ FIXED: Proper connection options
+      const connectOptions = {
+        useSSL: true,
+        userName: USERNAME,
+        password: PASSWORD,
+        timeout: 10,
+        keepAliveInterval: 60,
+        cleanSession: true,
+        onSuccess: () => {
+          log("✅ Connected successfully!", "success");
+          setConnection(true);
+          
+          // Subscribe to topics
+          client.subscribe(TOPIC_STATUS);
+          log(`Subscribed to ${TOPIC_STATUS}`, "success");
+          
+          client.subscribe(TOPIC_EXECUTE);
+          log(`Subscribed to ${TOPIC_EXECUTE}`, "success");
+          
+          client.subscribe(TOPIC_HEARTBEAT);
+          log(`Subscribed to ${TOPIC_HEARTBEAT}`, "success");
+          
+          // Request device status
+          setTimeout(() => sendCommand("list_tasks"), 1000);
+        },
+        onFailure: (err) => {
+          const errorMsg = `Connection failed: ${err.errorMessage || JSON.stringify(err)}`;
+          log(errorMsg, "error");
+          showError(errorMsg);
+          setConnection(false);
+        }
+      };
+
+      try {
+        client.connect(connectOptions);
+      } catch (e) {
+        log(`Connect exception: ${e.message}`, "error");
+        showError(`Connect exception: ${e.message}`);
+      }
+    }
+
+    function sendCommand(command, data = {}) {
+      if (!client || !isConnected) { 
+        showError("Not connected to MQTT broker");
+        return;
+      }
+      
+      const payload = JSON.stringify({ command, ...data });
+      const message = new Paho.Message(payload);
+      message.destinationName = TOPIC_COMMAND;
+      message.qos = 1;
+      
+      try {
+        client.send(message);
+        log(`📤 Sent command: ${command}`, "info");
+      } catch (e) {
+        log(`Send error: ${e.message}`, "error");
+        showError(`Failed to send command: ${e.message}`);
+      }
+    }
+
+    // Event Handlers
+    addTaskBtn.onclick = () => {
+      const name = document.getElementById("taskName").value.trim();
+      const action = document.getElementById("taskAction").value;
+      const hour = parseInt(document.getElementById("taskHour").value) || 0;
+      const minute = parseInt(document.getElementById("taskMinute").value) || 0;
+      const days = document.getElementById("taskDays").value;
+      const priority = parseInt(document.getElementById("taskPriority").value) || 2;
+
+      if (!name) { 
+        showError("Please enter task name");
+        return;
+      }
+
+      const taskId = "task_" + Date.now();
+      const taskObj = {
+        id: taskId,
+        name,
+        action,
+        hour,
+        minute,
+        days,
+        priority,
+        enabled: true
+      };
+
+      if (isConnected) {
+        sendCommand("add_task", { task: taskObj });
+      } else {
+        showError("Not connected to MQTT. Task added to UI only.");
+      }
+
+      tasks.push(taskObj);
+      renderTasks();
+
+      // Reset form
+      document.getElementById("taskName").value = "";
+      document.getElementById("taskHour").value = "12";
+      document.getElementById("taskMinute").value = "0";
+      document.getElementById("taskDays").value = "daily";
+      document.getElementById("taskPriority").value = "2";
+      
+      log(`✅ Added task: ${name}`, "success");
+    };
+
+    connectBtn.onclick = () => connectMqtt();
+    
+    syncTimeBtn.onclick = () => {
+      if (!isConnected) { 
+        showError("Connect to MQTT first");
+        return;
+      }
+      sendCommand("sync_time");
+      log("Sent sync_time command", "info");
+    };
+
+    listTasksBtn.onclick = () => {
+      if (!isConnected) {
+        showError("Connect to MQTT first");
+        return;
+      }
+      sendCommand("list_tasks");
+      log("Requested task list from device", "info");
+    };
+
+    clearAllBtn.onclick = () => {
+      if (confirm("Clear all tasks from UI? (This won't delete from device)")) {
+        tasks = [];
+        renderTasks();
+        log("Cleared all tasks from UI", "warning");
+      }
+    };
+
+    clearConsoleBtn.onclick = () => {
+      debugConsole.innerHTML = '<div class="text-gray-500">Console cleared</div>';
+    };
+
+    document.getElementById("taskName").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") addTaskBtn.click();
+    });
+
+    // Initialize UI
+    renderTasks();
+    renderExecutions();
+    setConnection(false);
+    log("Dashboard loaded. Click 'Connect MQTT' to start.", "info");
+  </script>
+</body>
+</html>
